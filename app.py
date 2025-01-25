@@ -1,94 +1,72 @@
 import logging
-from flask import Flask, jsonify, request
+import os
+import secrets
 import requests
+from flask import Flask, request, redirect, url_for, render_template, flash
+from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Create a Flask application instance
 app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['ALLOWED_EXTENSIONS'] = {'m3u8', 'hls'}
+
+# Generate a random secret key
+app.config['SECRET_KEY'] = secrets.token_hex(16)
+
+# Ensure the upload folder exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/upload', methods=['GET', 'POST'])
+def upload_file():
+    if request.method == 'POST':
+        if 'file' in request.files:
+            file = request.files['file']
+            if file.filename == '':
+                flash('No selected file')
+                return redirect(request.url)
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                flash(f'File uploaded successfully: {filename}')
+                return redirect(url_for('upload_file'))
+        elif 'url' in request.form:
+            file_url = request.form['url']
+            if file_url:
+                filename = file_url.split('/')[-1]
+                if allowed_file(filename):
+                    response = requests.get(file_url)
+                    if response.status_code == 200:
+                        filepath = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(filename))
+                        with open(filepath, 'wb') as f:
+                            f.write(response.content)
+                        flash(f'File downloaded and saved successfully: {filename}')
+                        return redirect(url_for('upload_file'))
+                    else:
+                        flash('Failed to download file from URL')
+                        return redirect(request.url)
+                else:
+                    flash('File type not allowed')
+                    return redirect(request.url)
+            else:
+                flash('No URL provided')
+                return redirect(request.url)
+    files = os.listdir(app.config['UPLOAD_FOLDER'])
+    return render_template('upload.html', files=files)
+
+if __name__ == '__main__':
+    app.run(debug=True)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# In-memory storage for HLS data
-hls_data_store = {}
-
-# Define a route for the home page
-@app.route('/')
-def home():
-    # Return a JSON response for the home page
-    return jsonify(message="Hello, world. We are building an HLS testing automation suite!")
-
-# Define a route for creating HLS data
-@app.route('/hls', methods=['POST'])
-def create_hls():
-    try:
-        # Get JSON data from the request
-        data = request.get_json()
-        hls_id = len(hls_data_store) + 1
-        hls_data_store[hls_id] = data
-        # Return a JSON response indicating success and the created HLS data
-        return jsonify(message="HLS data created successfully", id=hls_id, data=data), 201
-    except Exception as e:
-        logger.error(f"Error creating HLS data: {e}")
-        return jsonify(message="Error creating HLS data. Please check the data format and try again."), 500
-
-# Define a route for reading HLS data
-@app.route('/hls/<int:hls_id>', methods=['GET'])
-def read_hls(hls_id):
-    try:
-        data = hls_data_store.get(hls_id)
-        if data:
-            return jsonify(data=data)
-        else:
-            return jsonify(message="HLS data not found"), 404
-    except Exception as e:
-        logger.error(f"Error reading HLS data with ID {hls_id}: {e}")
-        return jsonify(message="Error reading HLS data. Please check the HLS ID and try again."), 500
-
-# Define a route for updating HLS data
-@app.route('/hls/<int:hls_id>', methods=['PUT'])
-def update_hls(hls_id):
-    try:
-        data = request.get_json()
-        if hls_id in hls_data_store:
-            hls_data_store[hls_id] = data
-            return jsonify(message="HLS data updated successfully", data=data)
-        else:
-            return jsonify(message="HLS data not found"), 404
-    except Exception as e:
-        logger.error(f"Error updating HLS data with ID {hls_id}: {e}")
-        return jsonify(message="Error updating HLS data. Please check the data format and HLS ID, then try again."), 500
-
-# Define a route for deleting HLS data
-@app.route('/hls/<int:hls_id>', methods=['DELETE'])
-def delete_hls(hls_id):
-    try:
-        if (hls_id) in hls_data_store:
-            del hls_data_store[hls_id]
-            return jsonify(message="HLS data deleted successfully")
-        else:
-            return jsonify(message="HLS data not found"), 404
-    except Exception as e:
-        logger.error(f"Error deleting HLS data with ID {hls_id}: {e}")
-        return jsonify(message="Error deleting HLS data. Please check the HLS ID and try again."), 500
-
-# Define a route for fetching and processing an HLS .m3u8 file from a URL
-@app.route('/fetch_hls', methods=['POST'])
-def fetch_hls():
-    url = request.json.get('url')
-    if not url:
-        return jsonify(message="URL is required"), 400
-
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        m3u8_content = response.text
-        return jsonify(message="HLS .m3u8 file fetched successfully", content=m3u8_content)
-    except requests.RequestException as e:
-        logger.error(f"Failed to fetch the HLS .m3u8 file from URL {url}: {e}")
-        return jsonify(message="Failed to fetch the HLS .m3u8 file. Please check the URL and try again.", error=str(e)), 500
-
-# Run the application if this script is executed directly
-if __name__ == '__main__':
-    # Enable debug mode for development and run on port 5001
-    app.run(debug=True, port=5001)
